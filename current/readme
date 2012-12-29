@@ -1,0 +1,82 @@
+ipblocker
+=========
+
+ipblocker for FreeBSD
+
+Supervises the log which checks through regular expressions.
+Blocks the IP addresses connected with found events through the add 
+to table in rules ipfw.
+Supervises time of block and automatical unblock.
+
+ipblocker based on  log of syslogd format, but filter can supervises any 
+log's format through special regular expressions for this format.
+
+ipblocker have client's and server's modules. The client filters log from 
+standart input and sends events to server. Server analyze time and 
+block\unblock IP.
+
+Client support to use with syslog.conf and plain log files as input.
+Server must work as daemon to client used syslogd.conf method.
+
+You have to be shure that events in log-file don't repeat when you use 
+logfile as input several times. For this purpose it is necessary to make 
+log to temporary file, filter this file with filter-ipblck and after that make 
+add this temporary file to real logfile for save or analyze anything.
+
+May be better way server start and stop in packet file while client use logfile 
+as input.
+
+Use Perl CPAN Date::Manip module
+
+Examples:
+
+1. use syslogd
+Make copy ipblocker to /usr/local/etc/rc.d/
+
+add to rc.conf:
+ipblockerd_enable="YES"
+
+add rule to ipfw rules, where N - number of table from ipblocker.conf :
+ipfw add deny from table(N) to me
+ipfw add deny from me to table(N)
+
+add to syslogd.conf next line:
+ 
+security.*                                      |exec /usr/local/etc/ipblocker/filter-ipblck security
+!ipblockerd
+*.*                                             /var/log/ipblocker.log
+*.*                                             |exec /usr/local/etc/ipblocker/filter-ipblck ipblocker
+
+2. use logfile as input
+Make copy ipblocker to /usr/local/etc/rc.d/
+
+add to rc.conf:
+ipblockerd_enable="YES"
+
+make shure that in vsftpd.conf :
+xferlog_file=/var/log/vsftp-tmp.log
+
+create packet file like this and run from cron:
+#!/bin/sh
+IPBLCK=/usr/local/etc/ipblocker
+mv /var/log/vsftp-tmp.log /tmp/current
+cat /tmp/current | %IPBLCK%/filter-ipblck vsftp
+cat /tmp/current >> /var/log/vsftp.log && rm /tmp/current
+
+3. use logfile as input ( alternative )
+!!! and ipblocker/filter in packet must use other port.
+!!! you can start/stop ipblocker from cron for not use daemon
+!!! in this way ipblocker's daemon only more precisely check 
+!!! timeout for unblock IP ( if it is necessary )
+
+Make copy ipblocker to /usr/local/etc/rc.d/
+
+add to rc.conf:
+ipblockerd_enable="YES"
+
+create packet file like this:
+#!/bin/sh
+IPBLCK=/usr/local/etc/ipblocker
+%IPBLCK%/ipblockerd start %IPBLCK%/ipblocker-other.conf
+cat /var/log/vsftp.log | %IPBLCK%/filter-ipblck vsftp
+%IPBLCK%/ipblockerd stop %IPBLCK%/ipblocker-other.conf

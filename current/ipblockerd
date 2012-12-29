@@ -1,0 +1,339 @@
+#!/usr/bin/perl
+#
+# IPBlocker by D.Khenkin
+# Daemon for block\unblock of logfile 
+#
+# Input:  Special format's logfile. 
+# Result: blocked IP address, that find more than COUNT times for
+#         the lsat TIME_CONTROL seconds;
+#         unblocked IP address, than was blocked more than 
+#         UNBLOCKED_TIME secound ago.
+#
+$version = '0.3';
+$autor   = 'D.Khenkin';
+#
+use integer;
+use Date::Manip qw(ParseDate UnixDate);   # use CPAN Manip
+use File::Basename;
+use File::Copy;
+use Sys::Hostname;
+use IO::Socket;
+use Sys::Syslog;
+
+sub getdate {
+# Convert date&time string to unix format
+#
+ my $string = shift;
+ $string =~ s/\s+\(. "\)\s"$//;
+ my $date = ParseDate($string);
+ my $epoch_secs = UnixDate($date,"%s");
+return $epoch_secs;
+}
+
+sub openserver {
+# Start server on localhost
+#
+ $server = IO::Socket::INET->new( Proto     => 'tcp',
+                                  LocalHost => '127.0.0.1',
+                                  LocalPort => $nPortServer,
+                                  Listen    => SOMAXCONN,
+#                                  Listen    => 1,
+                                  Reuse     => 1
+	                         ) or                                                              
+ die "Server not started" unless $server;
+ LoggingWork(3,"Server localhost:$nPortServer waiting for data");
+}
+
+sub readIn {
+# read logfile in special format
+# check time and count of event
+# block IP with count more than limit
+#
+  my @tmp;
+  @tmp=split /\s/, $sInputString; 
+  LoggingWork(3,"processing ".$sInputString);
+
+  my $sBadIp=$tmp[0];
+  my $dTimeEvent=$tmp[1];
+  my $dTestPeriod=$tmp[2];
+  my $dTimeForBlock=$tmp[3];
+  my $nCount=$tmp[4];
+  my $sCtrlFile=$tmp[5];
+
+  LoggingWork(3,"Timestamp=".$dCurTime." count IP=".$sBadIp." (".$dTimeEvent.") for period =".$dTestPeriod);
+
+  if ( $dCurTime-$dTimeEvent <= $dTestPeriod ) {
+    my $dTmpTime=$dTimeEvent+$dTestPeriod;
+    unless ( defined $tCountIp{$sBadIp} ) {
+      $tCountIp{$sBadIp}=1; $tTimeIp{$sBadIp}=$dTmpTime;
+      LoggingWork(3," --- IP=".$sBadIp." Count=".$tCountIp{$sBadIp});
+      return;
+    };
+    if ( $tCountIp{$sBadIp} > 0 ) {
+      $tCountIp{$sBadIp}++; $tTimeIp{$sBadIp}=$dTmpTime;
+      LoggingWork(3," --- IP=".$sBadIp." Count=".$tCountIp{$sBadIp});
+      if ( $tCountIp{$sBadIp} >= $nCount ) { 
+        LoggingWork(2,"Make to block ".$sBadIp." for ".$dTimeForBlock." seconds");
+        $dTmpTime=$dCurTime + $dTimeForBlock;
+        $tCountIp{$sBadIp}=-1; $tTimeIp{$sBadIp}= $dTmpTime;
+        $dTmpTime=scalar(localtime($dTmpTime));
+        $dTmpTime=~ s/^\S\S\S\s//;
+        LoggingWork(1,"Block ".$sBadIp." to ".$dTmpTime." by ".basename($sCtrlFile));
+      };
+      return;
+    };
+  };
+};
+
+sub CheckForBlock {
+# Scan hash-table and find IP that marked for block
+# This IP release after block
+#
+ foreach $sChkIp ( sort keys %tTimeIp ) {
+   LoggingWork(3,"Check IP for block ".$sChkIp." ".$tCountIp{$sChkIp});
+   if ( $tCountIp{$sChkIp} == -1 ) {
+     BlockIP( $sChkIp, $tTimeIp{$sChkIp} );
+     delete( $tCountIp{$sChkIp} );
+     delete( $tTimeIp {$sChkIp} );
+   };
+ };
+};
+
+sub CheckTimeout { 
+# Release IP with expired time
+#
+ foreach $sChkIp ( sort keys %tTimeIp ) {
+   LoggingWork(3, "Check IP for timeout ".$sChkIp." ".$tTimeIp{$sChkIp}." ".$dCurTime);
+   if ( $tTimeIp{$sChkIp} < ($dCurTime) ) {
+     LoggingWork(2, "Release IP (timeout) ".$sChkIp." ".$tTimeIp{$sChkIp}." ".$dCurTime);
+     delete( $tCountIp{$sChkIp} );
+     delete( $tTimeIp{$sChkIp} );
+   };
+ };
+};
+
+sub CheckForUnblock {
+# Check for IP in ipfw's table
+# Unblock IP, if time for block was finished
+#
+  LoggingWork(2, "Check IP for unblock ");
+  my @sResult=split /\n/, qx($sCmdListBlock);
+  for ( $i=0; defined $sResult[$i]; $i++ ) {
+    my @sTmp=split /\s+/, $sResult[$i];
+    LoggingWork(3, "Check for unblock IP=".$sTmp[0]." ".$sTmp[1]);
+    if ( $sTmp[1]<$dCurTime ) { UnBlockIP( $sTmp[0]) };
+  };
+}
+
+sub BlockIP {
+# BlockIP( IPaddr,Time)
+# Blocked IP (IPaddr), set time to unblock in unix format (Time)
+#
+ my ($sBlockedIP, $nTimeBlock) = @_;
+ LoggingWork(2,"Store to block table ".$sBlockedIP." to ".$nTimeBlock);
+ my $sTmpString=$sCmdBlock;
+ $sTmpString=~ s/%IP%/$sBlockedIP/;
+ $sTmpString=~ s/%TIMESTAMP%/$nTimeBlock/;
+ $sTmpString=$sTmpString." >/dev/null 2>&1";
+ LoggingWork(3,$sTmpString);
+ @sResult=qx($sTmpString);
+ print @sResult;
+}
+
+sub UnBlockIP {
+# UnBlockIP( IPaddr )
+# Release IP (IPaddr)
+#
+ my $sBlockedIP = $_[0];
+ LoggingWork(1,"Unblock ".$sBlockedIP);
+ my $sTmpString=$sCmdUnBlock;
+ $sTmpString=~ s/%IP%/$sBlockedIP/;
+ $sTmpString=$sTmpString." >/dev/null 2>&1";
+ LoggingWork(3,$sTmpString);
+ $sResult=qx($sTmpString);
+ print @sResult;
+}
+
+sub readCFGfile {
+# read config file, where first parameter is filename of config file 
+# set filter's parameters from config file
+#
+ $nPortServer         = '9000';                    # name of file with log event in special format from filter
+ $sCmdBlock           = 'ipfw table %TABLE% add %IP% %TIMESTAMP%';  # default command format to block IP
+ $sCmdUnBlock         = 'ipfw table %TABLE% del %IP%';              # default command format to unblock IP
+ $sCmdListBlock       = 'ipfw table %TABLE% list'; # default command format to unblock IP
+ $nNumberTableIPFW    = '257';                     # number of table for ipfw rules (1-125)
+ $nDebugLevel	      = '1';			   # default level of debug info (0..3)
+ $sNameLogFile        = '-';                       # default log to syslogd
+ $sPidFile            = '/var/run/'.$sNameMe.'.pid';#   pid file
+ $dDelay              = 10;                        # delay for check (second)
+ $sKillWord           = '1441816232611058sfgfdgg31232135435asdaa21354GGJGJGHJ2454534adaUIYIHGUGjb7658678678hn'; $sKillWord=~ s/\'//g;
+ 
+ unless ( $sNameCfgFile=~ /\// ) { $sNameCfgFile = $sCfgPath.$sNameCfgFile };
+ open(fTempSpecLog,$sNameCfgFile) or die "Config-file not found or read error : ".$sNameCfgFile."\n\n";  
+ while (<fTempSpecLog>) {
+   my ($sNameParameters,$sValueParameters) = split/=|\n/;
+   $sNameParameters  =~ s/\s+//g;
+   $sValueParameters =~ s/^\s+//;
+   $sValueParameters =~ s/^(\'|")//;
+   $sValueParameters =~ s/\s+$//;
+   $sValueParameters =~ s/("|\')$//;
+   
+   if    ($sNameParameters =~ /^port$/i )            {$nPortServer         = $sValueParameters }
+   elsif ($sNameParameters =~ /^ipfwCmdBlock$/i )    {$sCmdBlock           = $sValueParameters }
+   elsif ($sNameParameters =~ /^ipfwCmdUnBlock$/i )  {$sCmdUnBlock         = $sValueParameters }
+   elsif ($sNameParameters =~ /^ipfwCmdListBlock$/i ){$sCmdListBlock       = $sValueParameters }
+   elsif ($sNameParameters =~ /^tableipfw$/i )       {$nNumberTableIPFW    = $sValueParameters }
+   elsif ($sNameParameters =~ /^logfile$/i )         {$sNameLogFile        = $sValueParameters }
+   elsif ($sNameParameters =~ /^loglevel$/i )        {$nDebugLevel         = $sValueParameters }
+   elsif ($sNameParameters =~ /^pidfile$/i )         {$sPidFile            = $sValueParameters }
+   elsif ($sNameParameters =~ /^delay$/i )           {$dDelay              = $sValueParameters }
+   elsif ($sNameParameters =~ /^magicword$/i )       {$dKillWord           = $sValueParameters }
+   ;
+ };
+ $sCmdBlock=~     s/%TABLE%/$nNumberTableIPFW/;
+ $sCmdUnBlock=~   s/%TABLE%/$nNumberTableIPFW/;  
+ $sCmdListBlock=~ s/%TABLE%/$nNumberTableIPFW/;
+ close(fTempSpecLog) or die $!;
+};
+
+sub LoggingWork {
+  my ($nLevel,$sValue)=@_;
+  if  ( $nDebugLevel >= $nLevel ) {
+   if ( $sNameLogFile=~ /^-$/ ) {
+     syslog('notice',$sValue);
+   } else {
+     $sTmp=localtime;
+     $sValue=~ s/\s+$//;
+     $sTmp=$sTmp." ".$sHostname." ".$sNameMe.": ".$sValue."\n";
+     
+     open(fMyLog, ">>".$sNameLogFile ) or die "Error open logfile :".$sNameLogFile;  
+     print fMyLog $sTmp;
+     close(fMyLog) or die $!;
+   }
+  }
+}
+
+sub MainModuleDaemon {
+
+   LoggingWork(1,"Started");
+   LoggingWork(3,"Port            = ".$nPortServer);
+   LoggingWork(3,"IPFW block      = ".$sCmdBlock);
+   LoggingWork(3,"IPFW unblock    = ".$sCmdUnBlock);
+   LoggingWork(3,"IPFW list table = ".$sCmdListBlock);
+   LoggingWork(3,"IPFW table      = ".$nNumberTableIPFW);
+   LoggingWork(3,"LogLevel        = ".$nDebugLevel);
+   LoggingWork(3,"Filelog         = ".$sNameLogFile);
+   LoggingWork(3,"PIDfile         = ".$sPidFile);
+   LoggingWork(3,"Delay           = ".$dDelay);
+   LoggingWork(3,"magicword       = ".$sKillWord);
+
+ open(fTempSpecLog, ">".$sPidFile ) or die "Error open pidfile :".$sPidFile;  
+ print fTempSpecLog $$;
+ close(fTempSpecLog);
+
+ die "Error fork: $!" unless defined($dUnblockPid = fork());
+ if ( $dUnblockPid ) {             # main process
+     openserver();
+     while ( $sServerLog = $server->accept() ) {
+       while (<$sServerLog>) {
+         $sInputString = $_;
+         next unless /\S+/;
+         $sInputString=~ s/(\s+)$//;
+         if ( $sInputString=~ /^$sKillWord$/i ) { 
+           LoggingWork(3,"Receive exit signal"); 
+           last;
+         } elsif ( $sInputString=~ /^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}) \d+ \d+ \d+ \d+ \S+$/i ) {
+           $dCurTime=localtime;
+           $dCurTime=getdate($dCurTime);
+
+           readIn();
+           CheckForBlock();
+           CheckTimeout();
+    
+           unless ( -f $sPidFile ) { 
+            LoggingWork(3,"(1) Exit no pid");
+            $sInputString=$sKillWord;
+            last;
+           }
+         }
+         else { next };
+       };
+       close $sServerLog;
+       if ( $sInputString=~ /^$sKillWord$/i ) {
+         last; 
+       }
+     };
+     kill("TERM", $dUnblockPid);
+  
+     LoggingWork(1,"Stoped");
+     unlink $sPidFile;
+     exit(0);
+ } else {                          # child process for check ublock IP
+     while (1) {
+       $dCurTime=localtime;
+       $dCurTime=getdate($dCurTime);
+       CheckForUnblock();
+       sleep($dDelay);       
+       unless ( -f $sPidFile ) {
+         LoggingWork(3,"(2) Exit no pid"); 
+         last;
+       }
+     }
+ };
+};
+
+
+#########################
+# main program ;)
+$sCommand=$ARGV[0];
+$sNameCfgFile=$ARGV[1];
+# read parameters
+
+@tmp            = split /\./, hostname;		   # get hostname
+our $sHostname  = $tmp[0];
+our $sNameMe    = basename($0);			   # get program name
+our $sCfgPath   = "/usr/local/etc/ipblocker/";
+
+our %tTimeIp;  $tTimeIp {'127.0.0.1'} = 0;
+our %tCountIp; $tCountIp{'127.0.0.1'} = 1;
+
+if ( defined $sCommand ) {                          # if parameter exist
+ if ( $sCommand=~ /-v/i ){
+  die $sNameMe." version ".$version." by ".$autor."\n\n";
+ } elsif ( defined $sNameCfgFile ) {
+     if    ( $sCommand=~ /^start$/i ) {
+        readCFGfile();
+        if ( -f $sPidFile ) { 
+          die "Exist PID file ".$sPidFile.", may be ".$sNameMe." already started?\n";
+        }
+        die "Error fork: $!" unless defined($dMainModule = fork());
+        if ( $dMainModule ){			    # start process
+           print "Starting ".$sNameMe."\n";
+           exit 0;
+        } else {                                    # daemon process
+           MainModuleDaemon()
+        }  
+     } elsif ( $sCommand=~ /^stop$/i ) {
+        readCFGfile();
+        $sServerLog = IO::Socket::INET->new( Proto    => "tcp",
+	                                     PeerAddr => "127.0.0.1",
+                                             PeerPort => $nPortServer,
+                                             Timeout  => '0.1',
+                                            )
+        or die "can't connect to localhost:".$nPortServer.", may be ".$sNameMe." not in memory";
+        print $sServerLog $sKillWord;
+        close $sServerLog; $i=0;
+        while ( -f $sPidFile ) { 
+           $i++;
+           if ( $i >= 15 ) { unlink $sPidFile };
+           sleep 1
+        }
+        print "Stopped ".$sNameMe."\n";
+        exit 0;
+     }
+ } else { die "Usage: ".$sNameMe." \[start|stop|-v|-h\] cfgfile \n\n"; };
+} else { die "Usage: ".$sNameMe." \[start|stop|-v|-h\] cfgfile \n\n"; };
+
+exit 0;
+

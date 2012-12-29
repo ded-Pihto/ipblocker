@@ -1,0 +1,35 @@
+#
+# Config file for Filter IPBlocker
+#
+###########################################
+
+# port for communication with server
+# server must be only on localhost
+port = 9000
+
+# white IP
+#
+# this IP cant't block anytime
+#   sorry, you can't write ip-net style ( 192.168.1.0/24 for example )
+#   you can mask /24 change to short IP ( 192.168.1.0/24 to 192.168.1. ),
+#   but you can't specify192.168.1.248/30 to white-list, you must specify
+#   separate IP's
+#
+whiteIp       = 127.0.0.1 192.168. 
+
+# check duplicate event in this period of seconds
+#
+PeriodControl = 21600
+
+# count duplicate event to block source IP
+#
+Count	      = 10
+
+# block IP for time in seconds
+PeriodBan     = 86400
+
+# regular expression, that define "bad" event
+# up to 10 patterns
+#
+pattern1      = ipblockerd: Block (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})
+#pattern2      = 

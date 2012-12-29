@@ -1,0 +1,153 @@
+#!/usr/bin/perl
+#
+# Filter for IPBlocker by D.Khenkin
+# Base filter of logfile 
+#
+# Input:  String from STDIN at syslog's format. 
+#         Parse with filters based on regular expression
+# Result: IP address - source packet in filtered string;
+#         unix-format data and time from this string;
+#         more technical information for block IP from config file.
+#
+$version = '0.3';
+$autor   = 'D.Khenkin';
+#
+use integer;
+use Date::Manip qw(ParseDate UnixDate);   # use CPAN Manip
+use File::Basename;
+use IO::Socket;
+
+sub getdate {
+# Convert date&time string to unix format
+#
+ my $string = shift;
+ $string =~ s/\s+\(. "\)\s"$//;
+ my $date = ParseDate($string);
+ my $epoch_secs = UnixDate($date,"%s");
+return $epoch_secs;
+}
+
+sub readIn {
+# read STDIN
+# write IP from string and any technical info to 
+#    output file if found PATTERN in current string
+#    ( exclude IP from whitelist )
+#
+ while (<>) {
+  my $sInputString = $_;
+
+  if ( 
+     $sInputString=~ /$sPatternInputString1/i || 
+     $sInputString=~ /$sPatternInputString2/i || 
+     $sInputString=~ /$sPatternInputString3/i || 
+     $sInputString=~ /$sPatternInputString4/i || 
+     $sInputString=~ /$sPatternInputString5/i || 
+     $sInputString=~ /$sPatternInputString6/i || 
+     $sInputString=~ /$sPatternInputString7/i || 
+     $sInputString=~ /$sPatternInputString8/i || 
+     $sInputString=~ /$sPatternInputString9/i || 
+     $sInputString=~ /$sPatternInputString10/i 
+     ) {
+   my @tmp;
+   @tmp=map{/$sIPPattern/} split /\s/, $sInputString; 
+   $sBadIp=$tmp[0];
+   
+   unless ( $sBadIp=~ /$sWhiteListIP/i ) {
+ 
+    @tmp=split /\./, qx(uname -n);
+    @tmp=split /$tmp[0]/, $sInputString; 
+   
+    $sServerLog = IO::Socket::INET->new( Proto    => "tcp",
+                                         PeerAddr => "127.0.0.1",
+                                         PeerPort => $nPortServer,
+                                         Timeout  => '1',
+                                        );
+##    or die "can't connect to localhost$nPortServer, may be server not in memory";
+    print $sServerLog $sBadIp," ",getdate($tmp[0])," ",$sPeriodCtrl," ",$sPeriodBan," ",$sNumberErr," ",$sNameCfgFile,"\n";
+    close $sServerLog;
+   }
+  } 
+ }
+}
+
+sub readCFGfile {
+# read config file, where first parameter is filename of config file 
+# set filter's parameters from config file
+# 
+ $sPatternInputString1 = '^ZZZZ';
+ $sPatternInputString2 = '^ZZZZ';
+ $sPatternInputString3 = '^ZZZZ';
+ $sPatternInputString4 = '^ZZZZ';
+ $sPatternInputString5 = '^ZZZZ';
+ $sPatternInputString6 = '^ZZZZ';
+ $sPatternInputString7 = '^ZZZZ';
+ $sPatternInputString8 = '^ZZZZ';
+ $sPatternInputString9 = '^ZZZZ';
+ $sPatternInputString10= '^ZZZZ';
+ $nPortServer         = '9000';
+ $sWhiteListIP        = '-';
+ $sPeriodCtrl         = '600';
+ $sPeriodBan          = '1500';
+ $sNumberErr          = '5';
+ 
+ $sIPPattern          = '(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})';
+
+ unless ( $sNameCfgFile=~ /\// ) { $sNameCfgFile = $sCfgPath.$sNameCfgFile };
+ open(fTempSpecLog,$sNameCfgFile) or die "Config-file not found or read error : ".$sNameCfgFile."\n\n";  
+ while (<fTempSpecLog>) {
+   my ($sNameParameters,$sValueParameters) = split/=|\n/;
+   $sNameParameters  =~ s/\s+//g;
+   $sValueParameters =~ s/^\s+//;
+   $sValueParameters =~ s/^(\'|")//;
+   $sValueParameters =~ s/\s+$//;
+   $sValueParameters =~ s/("|\')$//;
+   
+   if    ($sNameParameters =~ /^pattern1$/i )      {$sPatternInputString1 = $sValueParameters }
+   elsif ($sNameParameters =~ /^pattern2$/i )      {$sPatternInputString2 = $sValueParameters }
+   elsif ($sNameParameters =~ /^pattern3$/i )      {$sPatternInputString3 = $sValueParameters }
+   elsif ($sNameParameters =~ /^pattern4$/i )      {$sPatternInputString4 = $sValueParameters }
+   elsif ($sNameParameters =~ /^pattern5$/i )      {$sPatternInputString5 = $sValueParameters }
+   elsif ($sNameParameters =~ /^pattern6$/i )      {$sPatternInputString6 = $sValueParameters }
+   elsif ($sNameParameters =~ /^pattern7$/i )      {$sPatternInputString7 = $sValueParameters }
+   elsif ($sNameParameters =~ /^pattern8$/i )      {$sPatternInputString8 = $sValueParameters }
+   elsif ($sNameParameters =~ /^pattern9$/i )      {$sPatternInputString9 = $sValueParameters }
+   elsif ($sNameParameters =~ /^pattern10$/i )     {$sPatternInputString10= $sValueParameters }
+   elsif ($sNameParameters =~ /^port$/i )          {$nPortServer          = $sValueParameters }
+   elsif ($sNameParameters =~ /^whiteip$/i )       {$sWhiteListIP         = $sValueParameters }
+   elsif ($sNameParameters =~ /^periodcontrol$/i ) {$sPeriodCtrl          = $sValueParameters }
+   elsif ($sNameParameters =~ /^periodban$/i )     {$sPeriodBan           = $sValueParameters }
+   elsif ($sNameParameters =~ /^count$/i )         {$sNumberErr           = $sValueParameters }
+   ;
+   $sWhiteListIP=~ s/\s+/|/g;
+ };
+ close(fTempSpecLog) or die $!;
+};
+
+#########################
+# main program ;)
+
+$sNameCfgFile=shift;
+# read parameters
+
+$|=1;
+$OUTPUT_AUTOFLUSH=1;
+#set flush data to disk, no buffering
+
+ $sNameMe=basename($0);
+ $sMyPath=dirname(File::Spec->rel2abs($0));
+ $sCfgPath="/usr/local/etc/ipblocker/modules/";
+
+if ( defined $sNameCfgFile) {                      # if parameter exist
+ if ( $sNameCfgFile =~ /-v/i ) {                   # if parameter -v,--version
+  die "".$sNameMe." version ".$version." by ".$autor."\n\n";
+ }
+ unless ( $sNameCfgFile =~ /(-\?|-h)/i) {          # if parameter not -h,-?,--help
+   readCFGfile();
+   readIn();
+   exit(0);
+ }
+};
+
+die 
+"Usage: ".$sNameMe." \[CONFIGFILE|-v|-h\]
+       /dev/stdin use as input\n";
