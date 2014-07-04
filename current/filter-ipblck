@@ -9,12 +9,13 @@
 #         unix-format data and time from this string;
 #         more technical information for block IP from config file.
 #
-$version = '0.3';
+$version = '0.5';
 $autor   = 'D.Khenkin';
 #
 use integer;
 use Date::Manip qw(ParseDate UnixDate);   # use CPAN Manip
 use File::Basename;
+use File::Spec;
 use IO::Socket;
 
 sub getdate {
@@ -62,11 +63,12 @@ sub readIn {
                                          PeerPort => $nPortServer,
                                          Timeout  => '1',
                                         );
-##    or die "can't connect to localhost$nPortServer, may be server not in memory";
     print $sServerLog $sBadIp," ",getdate($tmp[0])," ",$sPeriodCtrl," ",$sPeriodBan," ",$sNumberErr," ",$sNameCfgFile,"\n";
     close $sServerLog;
    }
-  } 
+   undef @tmp;
+  }
+  undef $sInputString;
  }
 }
 

@@ -14,6 +14,7 @@ $autor   = 'D.Khenkin';
 use integer;
 use Date::Manip qw(ParseDate UnixDate);   # use CPAN Manip
 use File::Basename;
+use File::Spec;
 use IO::Socket;
 
 sub getdate {
@@ -57,7 +58,7 @@ sub readIn {
     @tmp=split /$tmp[0]/, $sInputString; 
    
 ##    print $sBadIp," ",getdate($tmp[0])," ",$sPeriodCtrl," ",$sPeriodBan," ",$sNumberErr," ",$sNameCfgFile,"\n";
-    print "+";
+    print "*";
    }
   };
   print $sInputString;

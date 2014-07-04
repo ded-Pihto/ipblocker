@@ -9,13 +9,14 @@
 #         unblocked IP address, than was blocked more than 
 #         UNBLOCKED_TIME secound ago.
 #
-$version = '0.3';
+$version = '0.8';
 $autor   = 'D.Khenkin';
 #
 use integer;
 use Date::Manip qw(ParseDate UnixDate);   # use CPAN Manip
 use File::Basename;
 use File::Copy;
+use File::Spec;
 use Sys::Hostname;
 use IO::Socket;
 use Sys::Syslog;
@@ -64,7 +65,7 @@ sub readIn {
 
   if ( $dCurTime-$dTimeEvent <= $dTestPeriod ) {
     my $dTmpTime=$dTimeEvent+$dTestPeriod;
-    unless ( defined $tCountIp{$sBadIp} ) {
+    unless ( exists($tCountIp{$sBadIp}) ) {
       $tCountIp{$sBadIp}=1; $tTimeIp{$sBadIp}=$dTmpTime;
       LoggingWork(3," --- IP=".$sBadIp." Count=".$tCountIp{$sBadIp});
       return;
@@ -85,25 +86,17 @@ sub readIn {
   };
 };
 
-sub CheckForBlock {
+sub CheckForBlockAndTimeout {
 # Scan hash-table and find IP that marked for block
 # This IP release after block
 #
- foreach $sChkIp ( sort keys %tTimeIp ) {
-   LoggingWork(3,"Check IP for block ".$sChkIp." ".$tCountIp{$sChkIp});
+ foreach $sChkIp ( keys %tTimeIp ) {
+   LoggingWork(3,"Check IP for block or timeout ".$sChkIp." ".$tCountIp{$sChkIp}." ".$tTimeIp{$sChkIp}." ".$dCurTime);
    if ( $tCountIp{$sChkIp} == -1 ) {
      BlockIP( $sChkIp, $tTimeIp{$sChkIp} );
      delete( $tCountIp{$sChkIp} );
-     delete( $tTimeIp {$sChkIp} );
+     delete( $tTimeIp{$sChkIp} );
    };
- };
-};
-
-sub CheckTimeout { 
-# Release IP with expired time
-#
- foreach $sChkIp ( sort keys %tTimeIp ) {
-   LoggingWork(3, "Check IP for timeout ".$sChkIp." ".$tTimeIp{$sChkIp}." ".$dCurTime);
    if ( $tTimeIp{$sChkIp} < ($dCurTime) ) {
      LoggingWork(2, "Release IP (timeout) ".$sChkIp." ".$tTimeIp{$sChkIp}." ".$dCurTime);
      delete( $tCountIp{$sChkIp} );
@@ -118,11 +111,15 @@ sub CheckForUnblock {
 #
   LoggingWork(2, "Check IP for unblock ");
   my @sResult=split /\n/, qx($sCmdListBlock);
+  my $sTmp1="::/32";
   for ( $i=0; defined $sResult[$i]; $i++ ) {
     my @sTmp=split /\s+/, $sResult[$i];
+    if ( $sTmp[0] =~ m/$sTmp1/ ) {  $sTmp[0] = "0.0.0.0/32"        };
     LoggingWork(3, "Check for unblock IP=".$sTmp[0]." ".$sTmp[1]);
     if ( $sTmp[1]<$dCurTime ) { UnBlockIP( $sTmp[0]) };
   };
+  undef @sResult;
+  undef $sTmp1;
 }
 
 sub BlockIP {
@@ -216,7 +213,7 @@ sub LoggingWork {
 
 sub MainModuleDaemon {
 
-   LoggingWork(1,"Started");
+   LoggingWork(1,"Started daemon. v.".$version);
    LoggingWork(3,"Port            = ".$nPortServer);
    LoggingWork(3,"IPFW block      = ".$sCmdBlock);
    LoggingWork(3,"IPFW unblock    = ".$sCmdUnBlock);
@@ -238,7 +235,6 @@ sub MainModuleDaemon {
      while ( $sServerLog = $server->accept() ) {
        while (<$sServerLog>) {
          $sInputString = $_;
-         next unless /\S+/;
          $sInputString=~ s/(\s+)$//;
          if ( $sInputString=~ /^$sKillWord$/i ) { 
            LoggingWork(3,"Receive exit signal"); 
@@ -248,9 +244,8 @@ sub MainModuleDaemon {
            $dCurTime=getdate($dCurTime);
 
            readIn();
-           CheckForBlock();
-           CheckTimeout();
-    
+           CheckForBlockAndTimeout();
+
            unless ( -f $sPidFile ) { 
             LoggingWork(3,"(1) Exit no pid");
             $sInputString=$sKillWord;
@@ -309,7 +304,7 @@ if ( defined $sCommand ) {                          # if parameter exist
         }
         die "Error fork: $!" unless defined($dMainModule = fork());
         if ( $dMainModule ){			    # start process
-           print "Starting ".$sNameMe."\n";
+           print "Starting ".$sNameMe." version ".$version."\n";
            exit 0;
         } else {                                    # daemon process
            MainModuleDaemon()
@@ -320,8 +315,11 @@ if ( defined $sCommand ) {                          # if parameter exist
 	                                     PeerAddr => "127.0.0.1",
                                              PeerPort => $nPortServer,
                                              Timeout  => '0.1',
-                                            )
-        or die "can't connect to localhost:".$nPortServer.", may be ".$sNameMe." not in memory";
+                                            );
+        if ( ! defined $sServerLog ) { 
+		print "Trying to stop, but can't connect to localhost:".$nPortServer.", may be ".$sNameMe." not in memory\n";
+		exit 1
+	    };
         print $sServerLog $sKillWord;
         close $sServerLog; $i=0;
         while ( -f $sPidFile ) { 
